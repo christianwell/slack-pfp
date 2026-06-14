@@ -1,0 +1,612 @@
+"""Shared helpers for the Slack PFP updater and its web dashboard.
+
+Handles config/state persistence, Last.fm lookups, Slack updates, and the
+overlay/holiday rendering system used to build the profile image.
+"""
+import hashlib
+import json
+import os
+import tempfile
+import time
+from datetime import datetime
+from io import BytesIO
+
+import requests
+from PIL import Image, ImageDraw, ImageFont
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")  # bundled default art (pfp, frame, overlays)
+CONFIG_PATH = os.path.join(BASE_DIR, "config.json")
+STATE_PATH = os.path.join(BASE_DIR, "state.json")
+UPLOADS_DIR = os.path.join(BASE_DIR, "uploads")
+EMOJI_CACHE_PATH = os.path.join(BASE_DIR, "emoji_cache.json")
+
+LASTFM_API_URL = "http://ws.audioscrobbler.com/2.0/"
+
+# Cachet: a cache/proxy for Hack Club Slack profile pictures and custom emojis.
+CACHET_BASE = "https://cachet.dunkirk.sh"
+
+# Candidate locations for a color emoji font (used to render emoji overlays).
+EMOJI_FONT_CANDIDATES = [
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/noto/NotoColorEmoji.ttf",
+    "/usr/share/fonts/google-noto-emoji/NotoColorEmoji.ttf",
+]
+
+
+# --------------------------------------------------------------------------- #
+# Config / state persistence
+# --------------------------------------------------------------------------- #
+
+DEFAULT_CONFIG = {
+    "poll_interval": 5,
+    "restore_delay": 30,
+    "frame_enabled": True,
+    # Placement of the framed album-art badge on the profile photo. Editable
+    # from the dashboard's "Edit / move" album editor. ``album_scale`` is the
+    # badge width as a fraction of the photo width (matches overlay ``scale``);
+    # anchor + offsets use the same system as overlay items.
+    "album_scale": 0.36,
+    "album_anchor": "bottom-left",
+    "album_offset_x": 0.02,
+    "album_offset_y": 0.02,
+    "show_status": True,
+    "status_format": "{song} - {artist} │ by slackpfp.christianwell.xyz",
+    "status_emoji": ":musical_note:",
+    "default_status": "",
+    "default_status_emoji": "",
+    "holidays": [
+        {
+            "id": "birthday", "name": "Birthday", "enabled": True,
+            "start": "03-02", "end": "03-02",
+            "status_text": "🎂 It's my birthday!", "status_emoji": ":birthday:",
+            "items": [
+                {"image": "assets/hat.png", "scale": 0.30, "anchor": "top-center",
+                 "offset_x": 0.0, "offset_y": 0.02},
+                {"image": "assets/cake.png", "scale": 0.30, "anchor": "bottom-right",
+                 "offset_x": 0.02, "offset_y": 0.02},
+            ],
+        },
+        {
+            "id": "halloween", "name": "Halloween", "enabled": True,
+            "start": "10-25", "end": "10-31",
+            "status_text": "🎃 Spooky season", "status_emoji": ":jack_o_lantern:",
+            "items": [
+                {"image": "assets/halloween_hat.png", "scale": 0.38, "anchor": "top-center",
+                 "offset_x": 0.0, "offset_y": -0.02},
+                {"image": "assets/halloween_pumpkin.png", "scale": 0.30, "anchor": "bottom-right",
+                 "offset_x": 0.02, "offset_y": 0.02},
+            ],
+        },
+        {
+            "id": "christmas", "name": "Christmas", "enabled": True,
+            "start": "12-20", "end": "12-26",
+            "status_text": "🎄 Merry Christmas!", "status_emoji": ":christmas_tree:",
+            "items": [
+                {"emoji": "🎅", "scale": 0.32, "anchor": "top-center",
+                 "offset_x": 0.0, "offset_y": 0.0},
+                {"emoji": "🎄", "scale": 0.26, "anchor": "bottom-right",
+                 "offset_x": 0.02, "offset_y": 0.02},
+            ],
+        },
+        {
+            "id": "newyear", "name": "New Year", "enabled": True,
+            "start": "12-31", "end": "01-01",
+            "status_text": "🎆 Happy New Year!", "status_emoji": ":fireworks:",
+            "items": [
+                {"emoji": "🎉", "scale": 0.26, "anchor": "bottom-left",
+                 "offset_x": 0.02, "offset_y": 0.02},
+                {"emoji": "🎆", "scale": 0.26, "anchor": "top-right",
+                 "offset_x": 0.02, "offset_y": 0.02},
+            ],
+        },
+    ],
+    "custom_overlays": [],
+}
+
+ANCHORS = [
+    "top-left", "top-center", "top-right",
+    "center-left", "center", "center-right",
+    "bottom-left", "bottom-center", "bottom-right",
+]
+
+
+def _atomic_write(path: str, data: str):
+    """Write a file atomically so readers never see a partial file."""
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path))
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(data)
+        os.replace(tmp, path)
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+
+def load_config() -> dict:
+    """Load config.json, falling back to (and seeding) defaults."""
+    if not os.path.exists(CONFIG_PATH):
+        save_config(DEFAULT_CONFIG)
+        return json.loads(json.dumps(DEFAULT_CONFIG))
+    try:
+        with open(CONFIG_PATH) as f:
+            cfg = json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return json.loads(json.dumps(DEFAULT_CONFIG))
+    # Backfill any missing top-level keys from defaults.
+    for key, val in DEFAULT_CONFIG.items():
+        cfg.setdefault(key, json.loads(json.dumps(val)))
+    return cfg
+
+
+def save_config(cfg: dict):
+    _atomic_write(CONFIG_PATH, json.dumps(cfg, indent=2, ensure_ascii=False))
+
+
+STATUS_MAX = 100  # Slack profile status_text hard limit
+
+
+def format_status(fmt: str, song: str, artist: str, album: str = "") -> str:
+    """Render a status from the user format string, truncated to Slack's limit.
+
+    Unknown placeholders fall back to a sane default so a bad format string
+    never stops the status from updating.
+    """
+    try:
+        text = fmt.format(song=song or "", artist=artist or "", album=album or "")
+    except (KeyError, IndexError, ValueError):
+        text = f"{song} - {artist}"
+    if len(text) > STATUS_MAX:
+        text = text[:STATUS_MAX - 1].rstrip() + "…"
+    return text
+
+
+def load_state() -> dict:
+    try:
+        with open(STATE_PATH) as f:
+            return json.load(f)
+    except (json.JSONDecodeError, OSError):
+        return {}
+
+
+def save_state(state: dict):
+    _atomic_write(STATE_PATH, json.dumps(state, indent=2, ensure_ascii=False))
+
+
+# --------------------------------------------------------------------------- #
+# Image helpers
+# --------------------------------------------------------------------------- #
+
+def download_image(url: str) -> Image.Image:
+    resp = requests.get(url, timeout=10)
+    resp.raise_for_status()
+    return Image.open(BytesIO(resp.content)).convert("RGBA")
+
+
+def load_local_image(path: str) -> Image.Image:
+    return Image.open(path).convert("RGBA")
+
+
+DEFAULT_PFP_PATH = os.path.join(ASSETS_DIR, "pfp.png")
+
+
+def fetch_slack_avatar_url(token: str) -> str:
+    """Return the signed-in user's current Slack profile image URL.
+
+    Prefers the highest-resolution custom upload. Returns "" on any failure
+    (no token, network error, default gravatar with no custom image, etc.).
+    """
+    if not token:
+        return ""
+    try:
+        resp = requests.get(
+            "https://slack.com/api/users.profile.get",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=10,
+        )
+        data = resp.json()
+    except Exception as e:
+        print(f"users.profile.get failed: {e}")
+        return ""
+    if not data.get("ok"):
+        return ""
+    p = data.get("profile", {})
+    return (p.get("image_original") or p.get("image_512")
+            or p.get("image_192") or "")
+
+
+def ensure_base_pfp(avatar_url: str, uid: str = "") -> str:
+    """Resolve a user's base profile photo to a local file path.
+
+    Downloads and caches their own Slack avatar (keyed by URL so a new avatar
+    re-downloads). Falls back to the bundled ``pfp.png`` when no avatar URL is
+    known or the download fails.
+    """
+    if not avatar_url:
+        return DEFAULT_PFP_PATH
+    h = hashlib.sha1(avatar_url.encode()).hexdigest()[:12]
+    cache = os.path.join(UPLOADS_DIR, f"base_{h}.png")
+    if os.path.exists(cache):
+        return cache
+    try:
+        img = download_image(avatar_url)
+        os.makedirs(UPLOADS_DIR, exist_ok=True)
+        img.save(cache, format="PNG")
+        return cache
+    except Exception as e:
+        print(f"base pfp download failed ({uid}): {e}")
+        return DEFAULT_PFP_PATH
+
+
+def fetch_slack_emoji(name: str, dest_dir: str, token: str = "") -> str:
+    """Download a Slack custom emoji and save it as an overlay image.
+
+    Resolves the image URL from the token's own workspace first (via
+    emoji.list, requires emoji:read) and falls back to the Cachet proxy.
+    Returns the saved overlay path ("uploads/<file>"). Raises on failure.
+    """
+    name = name.strip().strip(":")
+    if not name:
+        raise ValueError("empty emoji name")
+    url = ""
+    if token:
+        url = get_workspace_emojis(token).get(name, "")
+    if not url:
+        url = f"{CACHET_BASE}/emojis/{name}/r"
+    resp = requests.get(url, timeout=10, allow_redirects=True)
+    resp.raise_for_status()
+    ctype = resp.headers.get("Content-Type", "").lower()
+    ext = ".gif" if "gif" in ctype else ".webp" if "webp" in ctype else ".png"
+    fname = f"slack_{name}{ext}"
+    os.makedirs(dest_dir, exist_ok=True)
+    with open(os.path.join(dest_dir, fname), "wb") as f:
+        f.write(resp.content)
+    return f"uploads/{fname}"
+
+
+# --------------------------------------------------------------------------- #
+# Workspace custom emojis (Slack emoji.list, needs the emoji:read scope)
+# --------------------------------------------------------------------------- #
+
+def fetch_workspace_emojis(token: str) -> dict:
+    """Return {name: image_url} of the token workspace's custom emojis.
+
+    Requires the Slack token to have the ``emoji:read`` scope. Aliases are
+    resolved to their target image URL.
+    """
+    resp = requests.get(
+        "https://slack.com/api/emoji.list",
+        headers={"Authorization": f"Bearer {token}"},
+        timeout=15,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("ok"):
+        raise RuntimeError(data.get("error", "emoji.list failed"))
+    raw = data.get("emoji", {})
+    resolved = {}
+    for name, url in raw.items():
+        if isinstance(url, str) and url.startswith("alias:"):
+            resolved[name] = raw.get(url.split(":", 1)[1], "")
+        else:
+            resolved[name] = url
+    return {k: v for k, v in resolved.items() if v}
+
+
+def load_emoji_cache() -> dict:
+    try:
+        with open(EMOJI_CACHE_PATH) as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {"updated_at": 0, "emoji": {}}
+
+
+def save_emoji_cache(emoji: dict):
+    _atomic_write(EMOJI_CACHE_PATH,
+                  json.dumps({"updated_at": time.time(), "emoji": emoji}, ensure_ascii=False))
+
+
+def get_workspace_emojis(token: str, max_age: int = 86400, force: bool = False) -> dict:
+    """Cached accessor for workspace emojis; refetches when stale or forced.
+
+    Falls back to the last cached copy if the API call fails (e.g. missing scope).
+    """
+    cache = load_emoji_cache()
+    fresh = cache.get("emoji") and (time.time() - cache.get("updated_at", 0)) < max_age
+    if fresh and not force:
+        return cache["emoji"]
+    if not token:
+        return cache.get("emoji", {})
+    try:
+        emoji = fetch_workspace_emojis(token)
+        save_emoji_cache(emoji)
+        return emoji
+    except Exception as e:
+        print(f"emoji.list fetch failed: {e}")
+        return cache.get("emoji", {})
+
+
+def save_overlay_upload(stream, dest_dir: str, basename: str, max_size: int = 512) -> str:
+    """Validate + re-encode an uploaded overlay to a small optimized PNG.
+
+    Opening with Pillow validates that the bytes are a real image (rejects
+    junk/abuse). Overlays are only ever composited at ≤512px, so we never store
+    anything larger — keeping per-user disk use tiny. Returns the saved filename.
+    """
+    img = Image.open(stream)
+    img.load()
+    img = img.convert("RGBA")
+    if img.width > max_size or img.height > max_size:
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    os.makedirs(dest_dir, exist_ok=True)
+    fname = f"{basename}.png"
+    img.save(os.path.join(dest_dir, fname), format="PNG", optimize=True)
+    return fname
+
+
+def prepare_image_for_slack(img: Image.Image, max_size: int = 512) -> BytesIO:
+    """Resize/encode to a PNG under Slack's 512KB limit."""
+    if img.width > max_size or img.height > max_size:
+        img.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+    out = BytesIO()
+    img.convert("RGBA").save(out, format="PNG", optimize=True)
+    out.seek(0)
+    if out.getbuffer().nbytes > 512 * 1024:
+        # Fall back to RGB if the RGBA PNG is too heavy.
+        out = BytesIO()
+        img.convert("RGB").save(out, format="PNG", optimize=True)
+        out.seek(0)
+        if out.getbuffer().nbytes > 512 * 1024:
+            raise ValueError(f"Image too large: {out.getbuffer().nbytes} bytes")
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Overlay system
+# --------------------------------------------------------------------------- #
+
+_emoji_font_cache: dict = {}
+
+
+def _find_emoji_font() -> str | None:
+    for path in EMOJI_FONT_CANDIDATES:
+        if os.path.exists(path):
+            return path
+    return None
+
+
+def render_emoji(emoji: str, px: int = 109) -> Image.Image:
+    """Render a color emoji to a tightly-cropped RGBA image."""
+    font_path = _find_emoji_font()
+    if not font_path:
+        raise RuntimeError("No color emoji font installed (fonts-noto-color-emoji)")
+    font = _emoji_font_cache.get(px)
+    if font is None:
+        font = ImageFont.truetype(font_path, px)
+        _emoji_font_cache[px] = font
+    canvas = Image.new("RGBA", (px * 2, px * 2), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(canvas)
+    draw.text((px // 2, px // 2), emoji, font=font, embedded_color=True)
+    bbox = canvas.getbbox()
+    return canvas.crop(bbox) if bbox else canvas
+
+
+def _item_image(item: dict) -> Image.Image:
+    """Resolve an overlay item to an RGBA image (emoji or file)."""
+    emoji = item.get("emoji")
+    if emoji:
+        return render_emoji(emoji)
+    name = item.get("image", "")
+    candidates = [
+        os.path.join(BASE_DIR, name),
+        # Bundled art lives in assets/; also resolves legacy configs that stored
+        # bare filenames (e.g. "hat.png") before assets/ existed.
+        os.path.join(ASSETS_DIR, os.path.basename(name)),
+        os.path.join(UPLOADS_DIR, os.path.basename(name)),
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            return load_local_image(path)
+    raise FileNotFoundError(f"Overlay image not found: {name}")
+
+
+def _anchor_pos(base_size, ov_size, anchor: str, ox: float, oy: float):
+    bw, bh = base_size
+    ow, oh = ov_size
+    dx, dy = int(bw * ox), int(bh * oy)
+    if "left" in anchor:
+        x = dx
+    elif "right" in anchor:
+        x = bw - ow - dx
+    else:
+        x = (bw - ow) // 2 + dx
+    if "top" in anchor:
+        y = dy
+    elif "bottom" in anchor:
+        y = bh - oh - dy
+    else:
+        y = (bh - oh) // 2 + dy
+    return x, y
+
+
+def apply_overlay_item(img: Image.Image, item: dict) -> Image.Image:
+    """Paste a single overlay item onto img according to its placement."""
+    ov = _item_image(item)
+    scale = float(item.get("scale", 0.25))
+    w = max(1, int(img.width * scale))
+    h = max(1, int(ov.height * (w / ov.width)))
+    ov = ov.resize((w, h), Image.Resampling.LANCZOS)
+    pos = _anchor_pos(img.size, (w, h), item.get("anchor", "bottom-right"),
+                      float(item.get("offset_x", 0.02)), float(item.get("offset_y", 0.02)))
+    out = img.copy()
+    out.paste(ov, pos, ov)
+    return out
+
+
+def _date_in_range(today: datetime, start: str, end: str) -> bool:
+    s = tuple(int(p) for p in start.split("-"))
+    e = tuple(int(p) for p in end.split("-"))
+    t = (today.month, today.day)
+    if s <= e:
+        return s <= t <= e
+    return t >= s or t <= e  # wraps over the new year
+
+
+def active_holidays(cfg: dict, today: datetime | None = None) -> list:
+    today = today or datetime.now()
+    return [h for h in cfg.get("holidays", [])
+            if h.get("enabled") and _date_in_range(today, h["start"], h["end"])]
+
+
+def build_base_image(cfg: dict, default_pfp_path: str, today: datetime | None = None) -> Image.Image:
+    """Profile photo with all active holiday + custom overlays applied."""
+    img = load_local_image(default_pfp_path)
+    for holiday in active_holidays(cfg, today):
+        for item in holiday.get("items", []):
+            try:
+                img = apply_overlay_item(img, item)
+            except Exception as e:
+                print(f"Overlay error ({holiday.get('id')}): {e}")
+    for overlay in cfg.get("custom_overlays", []):
+        if overlay.get("enabled"):
+            try:
+                img = apply_overlay_item(img, overlay)
+            except Exception as e:
+                print(f"Custom overlay error ({overlay.get('id')}): {e}")
+    return img
+
+
+def album_badge(album_img: Image.Image, frame_path: str, width: int) -> Image.Image:
+    """Composite album art inside the frame as a square ``width``px RGBA badge."""
+    width = max(8, int(width))
+    border = max(2, round(width * 8 / 184))  # ~4.3% border, matches the old look
+    inner = max(2, width - 2 * border)
+    album_img = album_img.resize((inner, inner), Image.Resampling.LANCZOS)
+    frame_img = Image.open(frame_path).convert("RGBA").resize(
+        (width, width), Image.Resampling.LANCZOS)
+    combined = Image.new("RGBA", (width, width), (255, 255, 255, 0))
+    combined.paste(album_img, (border, border), album_img)
+    combined.paste(frame_img, (0, 0), frame_img)
+    return combined
+
+
+def placeholder_album(size: int = 300) -> Image.Image:
+    """A neutral vinyl-style stand-in album cover for the editor preview."""
+    img = Image.new("RGBA", (size, size), (38, 42, 56, 255))
+    draw = ImageDraw.Draw(img)
+    m = size // 6
+    draw.ellipse([m, m, size - m, size - m], fill=(90, 100, 122, 255))
+    r = size // 12
+    c = size // 2
+    draw.ellipse([c - r, c - r, c + r, c + r], fill=(38, 42, 56, 255))
+    return img
+
+
+def album_placement(cfg: dict) -> tuple[float, str, float, float]:
+    """Return (scale, anchor, offset_x, offset_y) for the album badge."""
+    anchor = cfg.get("album_anchor", "bottom-left")
+    if anchor not in ANCHORS:
+        anchor = "bottom-left"
+    return (
+        float(cfg.get("album_scale", 0.36)),
+        anchor,
+        float(cfg.get("album_offset_x", 0.02)),
+        float(cfg.get("album_offset_y", 0.02)),
+    )
+
+
+def create_profile_image(base_img: Image.Image, album_img: Image.Image,
+                         frame_path: str, cfg: dict | None = None) -> Image.Image:
+    """Overlay the framed album-art badge onto ``base_img`` per ``cfg`` placement."""
+    scale, anchor, ox, oy = album_placement(cfg or {})
+    width = max(8, int(base_img.width * scale))
+    badge = album_badge(album_img, frame_path, width)
+    pos = _anchor_pos(base_img.size, badge.size, anchor, ox, oy)
+    result = base_img.copy()
+    result.paste(badge, pos, badge)
+    return result
+
+
+# --------------------------------------------------------------------------- #
+# Last.fm
+# --------------------------------------------------------------------------- #
+
+def validate_lastfm_user(api_key: str, username: str) -> dict:
+    """Check a Last.fm username for onboarding.
+
+    Returns {"status": ..., "track": <str or "">} where status is one of:
+      - "ok"       username exists and recent scrobbles are public
+      - "empty"    username exists but has no scrobbles yet
+      - "private"  username exists but recent listening is hidden
+      - "notfound" no such username
+      - "error"    network/API failure
+    """
+    username = (username or "").strip()
+    if not username:
+        return {"status": "notfound", "track": ""}
+    try:
+        resp = requests.get(
+            LASTFM_API_URL,
+            params={
+                "method": "user.getrecenttracks",
+                "user": username,
+                "api_key": api_key,
+                "format": "json",
+                "limit": 1,
+            },
+            timeout=10,
+        )
+        data = resp.json()
+        if isinstance(data, dict) and data.get("error"):
+            # 6 = invalid user; 17 = user has hidden their recent listening.
+            code = data.get("error")
+            if code == 6:
+                return {"status": "notfound", "track": ""}
+            if code == 17:
+                return {"status": "private", "track": ""}
+            return {"status": "error", "track": ""}
+        tracks = data.get("recenttracks", {}).get("track", [])
+        if not tracks:
+            return {"status": "empty", "track": ""}
+        t = tracks[0]
+        artist = t.get("artist", {}).get("#text", "")
+        song = t.get("name", "")
+        return {"status": "ok", "track": f"{song} — {artist}".strip(" —")}
+    except Exception as e:
+        print(f"Last.fm validate error: {e}")
+        return {"status": "error", "track": ""}
+
+
+def get_current_track(api_key: str, username: str) -> tuple:
+    """Return (track_id, song, artist, album, album_art_url) for the now-playing track."""
+    try:
+        resp = requests.get(
+            LASTFM_API_URL,
+            params={
+                "method": "user.getrecenttracks",
+                "user": username,
+                "api_key": api_key,
+                "format": "json",
+                "limit": 1,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        tracks = resp.json().get("recenttracks", {}).get("track", [])
+        if not tracks:
+            return None, None, None, None, None
+        track = tracks[0]
+        if track.get("@attr", {}).get("nowplaying") != "true":
+            return None, None, None, None, None
+        song = track.get("name")
+        artist = track.get("artist", {}).get("#text")
+        album = track.get("album", {}).get("#text", "")
+        album_art = None
+        for image in track.get("image", []):
+            if image.get("#text"):
+                album_art = image["#text"]
+        return f"{artist} - {song}", song, artist, album, album_art
+    except Exception as e:
+        print(f"Last.fm API error: {e}")
+    return None, None, None, None, None

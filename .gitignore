@@ -1,0 +1,19 @@
+# Secrets & per-user data — never commit
+.env
+users.db
+users.db-wal
+users.db-shm
+emoji_cache.json
+config.json
+state.json
+.cache
+
+# Per-user uploaded overlays
+uploads/*
+!uploads/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/

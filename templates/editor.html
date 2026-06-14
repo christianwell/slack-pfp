@@ -1,0 +1,301 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Editor · {{ title }}</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f1117; color: #e6e8ee; }
+    header { display: flex; align-items: center; justify-content: space-between;
+             padding: 16px 24px; border-bottom: 1px solid #1d2130; position: sticky; top: 0;
+             background: #0f1117; z-index: 5; }
+    header h1 { font-size: 1.05rem; margin: 0; }
+    a { color: #8b90a0; text-decoration: none; font-size: .85rem; }
+    .wrap { display: grid; grid-template-columns: 1fr 320px; gap: 24px; padding: 24px;
+            max-width: 1100px; margin: 0 auto; align-items: start; }
+    @media (max-width: 820px) { .wrap { grid-template-columns: 1fr; } }
+    .card { background: #1a1d27; border-radius: 16px; padding: 20px; margin-bottom: 20px;
+            border: 1px solid #232838; }
+    .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+               color: #8b90a0; margin: 0 0 14px; }
+    .stage-card { padding: 12px; }
+    .stage { position: relative; width: 100%; aspect-ratio: 1 / 1; border-radius: 14px;
+             overflow: hidden; background: #11131a; touch-action: none; user-select: none; }
+    .stage > img.base { width: 100%; height: 100%; display: block; object-fit: cover; pointer-events: none; }
+    .ov { position: absolute; cursor: grab; }
+    .ov img { width: 100%; height: 100%; display: block; pointer-events: none; -webkit-user-drag: none; }
+    .ov.selected { outline: 2px solid #4f7cff; outline-offset: 2px; }
+    .ov .handle { position: absolute; right: -7px; bottom: -7px; width: 16px; height: 16px;
+                  background: #4f7cff; border: 2px solid #fff; border-radius: 50%; cursor: nwse-resize; }
+    .ov .del { position: absolute; left: -7px; top: -7px; width: 18px; height: 18px; line-height: 14px;
+               text-align: center; background: #b33; color: #fff; border: 2px solid #fff;
+               border-radius: 50%; cursor: pointer; font-size: 12px; }
+    .ov .handle, .ov .del { display: none; }
+    .ov.selected .handle, .ov.selected .del { display: block; }
+    label { display: block; font-size: .8rem; color: #b8bdcc; margin: 12px 0 6px; }
+    input[type=text], input[type=number] {
+      width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid #2b2f3d;
+      background: #11131a; color: #e6e8ee; font-size: .9rem; }
+    .row { display: flex; gap: 10px; } .row > * { flex: 1; }
+    button { padding: 10px 14px; border: none; border-radius: 9px; background: #4f7cff;
+             color: #fff; font-weight: 600; cursor: pointer; font-size: .88rem; }
+    button:hover { background: #3d68ec; }
+    button.ghost { background: #232838; color: #cdd2e0; }
+    .meta { color: #8b90a0; font-size: .78rem; }
+    .flash { background: #14331f; color: #7fe0a3; padding: 10px 14px; border-radius: 10px;
+             margin: 0 24px 12px; font-size: .85rem; }
+    #status { font-size: .8rem; color: #6ee7a0; margin-left: 10px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎨 Editing: {{ title }}</h1>
+    <div><a href="{{ url_for('dashboard') }}">← Back to dashboard</a></div>
+  </header>
+
+  {% with messages = get_flashed_messages() %}
+    {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="wrap">
+    <div>
+      <div class="card stage-card">
+        <div class="stage" id="stage">
+          <img class="base" src="{{ url_for('base_png') }}" alt="base">
+        </div>
+        <div style="margin-top:12px; display:flex; align-items:center; gap:10px;">
+          <button id="save">Save layout</button>
+          <span class="meta">Drag to move · corner dot to resize · click ✕ to delete</span>
+          <span id="status"></span>
+        </div>
+      </div>
+    </div>
+
+    <div>
+      {% if scene == 'album' %}
+      <div class="card">
+        <h2>Album cover</h2>
+        <p class="meta">Drag to move and use the corner dot to resize where your
+          now-playing album art sits on your profile photo. Changes apply to your
+          live Slack photo the next time a track updates.</p>
+      </div>
+      {% elif scene != 'custom' %}
+      <div class="card">
+        <h2>Holiday details</h2>
+        <form method="post" action="{{ url_for('edit_holiday', hid=scene) }}">
+          <input type="hidden" name="next" value="{{ url_for('editor', scene=scene) }}">
+          <label>Name</label><input type="text" name="name" value="{{ title }}">
+          <div class="row">
+            <div><label>Start (MM-DD)</label><input type="text" name="start" value="{{ holiday_start }}"></div>
+            <div><label>End (MM-DD)</label><input type="text" name="end" value="{{ holiday_end }}"></div>
+          </div>
+          <label>Status text</label><input type="text" name="status_text" value="{{ holiday_status }}">
+          <label>Status emoji</label><input type="text" name="status_emoji" value="{{ holiday_emoji }}" data-emoji>
+          <div style="margin-top:14px"><button type="submit">Save details</button></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Add item</h2>
+        <form method="post" action="{{ url_for('add_holiday_item', hid=scene) }}" enctype="multipart/form-data">
+          <label>Unicode emoji</label><input type="text" name="emoji" placeholder="🎁">
+          <label>Hack Club Slack emoji <span class="meta">— name without colons</span></label>
+          <input type="text" name="slack_emoji" placeholder="hackshark">
+          <label>…or upload image</label>
+          <input type="file" name="image" accept=".png,.gif,.webp">
+          <div style="margin-top:14px"><button type="submit">Add item</button></div>
+        </form>
+      </div>
+      {% else %}
+      <div class="card">
+        <h2>Custom overlays</h2>
+        <p class="meta">Add or remove overlays from the dashboard. Here you can move and resize them.</p>
+        <div style="margin-top:12px"><a href="{{ url_for('dashboard') }}"><button class="ghost" type="button">Manage overlays</button></a></div>
+      </div>
+      {% endif %}
+
+      <div class="card">
+        <h2>Layers</h2>
+        <div id="layers"></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const SCENE = {{ scene | tojson }};
+    const ITEMS = {{ items | tojson }};
+    const RENDER_URL = {{ url_for('render_overlay') | tojson }};
+    const SAVE_URL = {{ url_for('save_layout', scene=scene) | tojson }};
+    const stage = document.getElementById('stage');
+    const layers = document.getElementById('layers');
+    const statusEl = document.getElementById('status');
+
+    const ALBUM = SCENE === 'album';
+    function renderSrc(it) {
+      if (it.src) return it.src;
+      const p = new URLSearchParams();
+      if (it.emoji) p.set('emoji', it.emoji);
+      else p.set('image', it.image);
+      return RENDER_URL + '?' + p.toString();
+    }
+    function stageSize() { return stage.clientWidth; } // square
+
+    // Compute initial top-left pixel position from stored anchor + offset.
+    function anchorPos(it, ow, oh) {
+      const b = stageSize();
+      const dx = b * it.offset_x, dy = b * it.offset_y;
+      const a = it.anchor || 'bottom-right';
+      let x, y;
+      if (a.includes('left')) x = dx;
+      else if (a.includes('right')) x = b - ow - dx;
+      else x = (b - ow) / 2 + dx;
+      if (a.includes('top')) y = dy;
+      else if (a.includes('bottom')) y = b - oh - dy;
+      else y = (b - oh) / 2 + dy;
+      return { x, y };
+    }
+
+    // Normalized state (0..1 of stage size) is the single source of truth:
+    //   nx, ny = top-left position, nscale = width. Pixels are derived for display.
+    const nodes = [];
+    let selected = null;
+
+    function select(node) {
+      if (selected) selected.el.classList.remove('selected');
+      selected = node;
+      if (node) node.el.classList.add('selected');
+      highlightLayers();
+    }
+
+    function buildNode(it) {
+      const el = document.createElement('div');
+      el.className = 'ov';
+      const img = document.createElement('img');
+      img.src = renderSrc(it);
+      el.appendChild(img);
+      const handle = document.createElement('div'); handle.className = 'handle'; el.appendChild(handle);
+      const del = document.createElement('div'); del.className = 'del'; del.textContent = '✕';
+      if (!ALBUM) el.appendChild(del);
+      stage.appendChild(el);
+
+      const node = { it, el, img, aspect: 1, nx: it.offset_x, ny: it.offset_y, nscale: it.scale };
+      nodes.push(node);
+
+      img.onload = () => {
+        node.aspect = img.naturalHeight / img.naturalWidth;
+        // Convert legacy anchor+offset to normalized top-left now that we know aspect.
+        const b = stageSize();
+        const w = Math.max(8, it.scale * b), h = w * node.aspect;
+        const pos = anchorPos(it, w, h);
+        node.nx = pos.x / b; node.ny = pos.y / b; node.nscale = it.scale;
+        clampNode(node); applyNode(node);
+      };
+
+      el.addEventListener('pointerdown', (e) => {
+        if (e.target === handle || e.target === del) return;
+        select(node);
+        const b = stageSize();
+        const sx = e.clientX, sy = e.clientY, ox = node.nx, oy = node.ny;
+        el.setPointerCapture(e.pointerId);
+        el.style.cursor = 'grabbing';
+        const move = (ev) => {
+          node.nx = ox + (ev.clientX - sx) / b;
+          node.ny = oy + (ev.clientY - sy) / b;
+          clampNode(node); applyNode(node);
+        };
+        const up = () => { el.style.cursor = 'grab'; el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); };
+        el.addEventListener('pointermove', move);
+        el.addEventListener('pointerup', up);
+      });
+
+      handle.addEventListener('pointerdown', (e) => {
+        e.stopPropagation(); select(node);
+        const b = stageSize();
+        const sx = e.clientX, os = node.nscale;
+        handle.setPointerCapture(e.pointerId);
+        const move = (ev) => {
+          node.nscale = Math.max(0.02, Math.min(1, os + (ev.clientX - sx) / b));
+          clampNode(node); applyNode(node);
+        };
+        const up = () => { handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); };
+        handle.addEventListener('pointermove', move);
+        handle.addEventListener('pointerup', up);
+      });
+
+      del.addEventListener('pointerdown', (e) => { e.stopPropagation(); });
+      del.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (!confirm('Delete this item?')) return;
+        const form = document.createElement('form');
+        form.method = 'post';
+        {% if scene != 'custom' %}
+        form.action = `/api/holiday/${SCENE}/item/${it.index}/delete`;
+        {% else %}
+        form.action = `/api/overlay/${it.oid}/delete`;
+        {% endif %}
+        document.body.appendChild(form); form.submit();
+      });
+
+      return node;
+    }
+
+    function clampNode(n) {
+      const wN = n.nscale, hN = n.nscale * n.aspect;
+      n.nx = Math.max(0, Math.min(1 - wN, n.nx));
+      n.ny = Math.max(0, Math.min(1 - hN, n.ny));
+    }
+    function applyNode(n) {
+      const b = stageSize();
+      n.el.style.left = (n.nx * b) + 'px'; n.el.style.top = (n.ny * b) + 'px';
+      n.el.style.width = (n.nscale * b) + 'px'; n.el.style.height = (n.nscale * n.aspect * b) + 'px';
+    }
+
+    function highlightLayers() {
+      [...layers.children].forEach((c, i) => {
+        c.style.background = (selected && nodes[i] === selected) ? '#232838' : 'transparent';
+      });
+    }
+    function buildLayers() {
+      layers.innerHTML = '';
+      if (!nodes.length) { layers.innerHTML = '<div class="meta">No items yet.</div>'; return; }
+      nodes.forEach((n) => {
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:8px 10px; border-radius:8px; cursor:pointer; font-size:.85rem;';
+        row.textContent = n.it.label || n.it.emoji || 'image';
+        row.onclick = () => select(n);
+        layers.appendChild(row);
+      });
+    }
+
+    stage.addEventListener('pointerdown', (e) => { if (e.target === stage || e.target.classList.contains('base')) select(null); });
+
+    ITEMS.forEach(buildNode);
+    buildLayers();
+
+    document.getElementById('save').addEventListener('click', async () => {
+      const payload = { items: nodes.map((n) => ({
+        index: n.it.index,
+        offset_x: n.nx,
+        offset_y: n.ny,
+        scale: n.nscale,
+      })) };
+      statusEl.textContent = 'Saving…';
+      try {
+        const r = await fetch(SAVE_URL, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        statusEl.textContent = r.ok ? 'Saved ✓' : 'Save failed';
+      } catch (_) { statusEl.textContent = 'Save failed'; }
+      setTimeout(() => statusEl.textContent = '', 2500);
+    });
+
+    // Keep normalized layout correct across viewport resizes.
+    let rt;
+    window.addEventListener('resize', () => {
+      clearTimeout(rt);
+      rt = setTimeout(() => nodes.forEach(applyNode), 100);
+    });
+  </script>
+  <script src="{{ url_for('static', filename='emoji-picker.js') }}"></script>
+</body>
+</html>

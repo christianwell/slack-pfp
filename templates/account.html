@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slack PFP · Account</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f1117; color: #e6e8ee; }
+    header { display: flex; align-items: center; justify-content: space-between;
+             padding: 16px 24px; border-bottom: 1px solid #1d2130; }
+    header h1 { font-size: 1.1rem; margin: 0; }
+    header a { color: #8b90a0; font-size: .85rem; text-decoration: none; }
+    .wrap { max-width: 560px; margin: 0 auto; padding: 24px; }
+    .card { background: #1a1d27; border-radius: 16px; padding: 24px; margin-bottom: 20px;
+            border: 1px solid #232838; }
+    .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+               color: #8b90a0; margin: 0 0 16px; }
+    .kv { display:flex; justify-content:space-between; padding:8px 0; border-bottom:1px solid #232838;
+          font-size:.9rem; }
+    .kv:last-child { border-bottom:none; }
+    .kv span { color:#8b90a0; }
+    .pill { display:inline-block; padding:3px 10px; border-radius:999px; font-size:.74rem; }
+    .on { background:#11331f; color:#6ee7a0; } .off { background:#2a2030; color:#c79ad0; }
+    button { padding: 10px 14px; border: none; border-radius: 9px; font-weight: 600;
+             cursor: pointer; font-size: .88rem; color:#fff; }
+    button.ghost { background:#232838; color:#cdd2e0; }
+    button.danger { background:#3a1d24; color:#ff9aa8; }
+    .flash { background: #14331f; color: #7fe0a3; padding: 10px 14px; border-radius: 10px;
+             margin-bottom: 18px; font-size: .85rem; }
+    .actions { display:flex; gap:10px; flex-wrap:wrap; }
+    .note { color:#8b90a0; font-size:.78rem; margin-top:12px; line-height:1.5; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎵 Account</h1>
+    <a href="{{ url_for('dashboard') }}">← Dashboard</a>
+  </header>
+  <div class="wrap">
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+    {% endwith %}
+
+    <div class="card">
+      <h2>Status</h2>
+      <div class="kv"><span>Slack user</span><div>{{ user.slack_user_id }}</div></div>
+      <div class="kv"><span>Workspace</span><div>{{ user.team_id }}</div></div>
+      <div class="kv"><span>Last.fm</span><div>{{ user.lastfm_username or '—' }}</div></div>
+      <div class="kv"><span>State</span>
+        <div><span class="pill {{ 'on' if user.onboarding == 'active' else 'off' }}">{{ user.onboarding }}</span></div>
+      </div>
+      {% if user.state.lastfm_status and user.state.lastfm_status != 'ok' %}
+        <div class="note">⚠ Last sync issue: {{ user.state.lastfm_status }}</div>
+      {% endif %}
+    </div>
+
+    <div class="card">
+      <h2>Manage</h2>
+      <div class="actions">
+        <form method="post" action="{{ url_for('account_pause') }}">
+          <button class="ghost" type="submit">
+            {{ 'Resume updates' if user.onboarding == 'paused' else 'Pause updates' }}
+          </button>
+        </form>
+        <form method="post" action="{{ url_for('account_disconnect') }}"
+              onsubmit="return confirm('Disconnect Slack? Updates stop until you reconnect.');">
+          <button class="ghost" type="submit">Disconnect Slack</button>
+        </form>
+        <form method="post" action="{{ url_for('account_delete') }}"
+              onsubmit="return confirm('Delete ALL your data permanently? This cannot be undone.');">
+          <button class="danger" type="submit">Delete my data</button>
+        </form>
+      </div>
+      <div class="note">Disconnecting clears your stored Slack token. Deleting removes your
+        settings, uploaded overlays, and account row entirely.</div>
+    </div>
+  </div>
+</body>
+</html>

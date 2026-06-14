@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slack PFP · Connect Last.fm</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
+           display: grid; place-items: center; min-height: 100vh; padding: 24px; }
+    .card { background: #1a1d27; padding: 36px; border-radius: 18px; width: min(460px, 95vw);
+            box-shadow: 0 10px 40px rgba(0,0,0,.4); }
+    h1 { margin: 0 0 6px; font-size: 1.3rem; }
+    p.sub { margin: 0 0 22px; color: #8b90a0; font-size: .9rem; line-height: 1.5; }
+    .steps { display:flex; gap:6px; margin-bottom:22px; }
+    .steps span { flex:1; height:4px; border-radius:2px; background:#232838; }
+    .steps span.done { background:#4f7cff; }
+    label { display: block; font-size: .82rem; color: #b8bdcc; margin: 14px 0 6px; }
+    input[type=text] { width: 100%; padding: 11px 12px; border-radius: 10px; border: 1px solid #2b2f3d;
+            background: #11131a; color: #e6e8ee; font-size: .95rem; }
+    .result { font-size: .85rem; margin-top: 10px; min-height: 1.2em; }
+    .ok { color: #6ee7a0; } .warn { color: #f3c969; } .err { color: #ff9aa8; }
+    .result a { color: #8fb0ff; }
+    .switch { display: flex; align-items: center; gap: 10px; margin: 20px 0; font-size: .9rem; }
+    .switch input { width: 18px; height: 18px; accent-color: #4f7cff; }
+    button { width: 100%; margin-top: 12px; padding: 12px; border: none; border-radius: 11px;
+             background: #4f7cff; color: #fff; font-weight: 600; cursor: pointer; font-size: .95rem; }
+    button:hover { background: #3d68ec; }
+    .flash { background: #14331f; color: #7fe0a3; padding: 10px 12px; border-radius: 10px;
+             font-size: .85rem; margin-bottom: 14px; }
+  </style>
+</head>
+<body>
+  <form class="card" method="post" action="{{ url_for('onboarding_lastfm') }}">
+    <div class="steps"><span class="done"></span><span class="done"></span><span></span></div>
+    <h1>Connect your Last.fm</h1>
+    <p class="sub">Signed in to Slack ✓. Now tell us your Last.fm username so we can read
+      your now-playing track. Your recent scrobbles must be <strong>public</strong>.</p>
+
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+    {% endwith %}
+
+    <label>Last.fm username</label>
+    <input type="text" id="lastfm" name="lastfm_username" autocomplete="off"
+           value="{{ user.lastfm_username }}" placeholder="e.g. rj" autofocus>
+    <div class="result" id="result"></div>
+
+    <div class="switch">
+      <input type="checkbox" name="go_live" id="go_live" checked>
+      <label for="go_live" style="margin:0">Start updating my Slack profile now</label>
+    </div>
+
+    <button type="submit">Save &amp; continue</button>
+  </form>
+
+  <script>
+    const input = document.getElementById('lastfm');
+    const result = document.getElementById('result');
+    let timer = null;
+    function check() {
+      const u = input.value.trim();
+      if (!u) { result.textContent = ''; return; }
+      result.textContent = 'Checking…'; result.className = 'result';
+      fetch('{{ url_for("lastfm_validate") }}?username=' + encodeURIComponent(u))
+        .then(r => r.json())
+        .then(d => {
+          if (d.status === 'ok') {
+            result.className = 'result ok';
+            result.textContent = '✓ Found — last played: ' + (d.track || 'a track');
+          } else if (d.status === 'empty') {
+            result.className = 'result warn';
+            result.textContent = '⚠ Account found but no scrobbles yet.';
+          } else if (d.status === 'private') {
+            result.className = 'result warn';
+            result.innerHTML = '⚠ Recent listening is hidden. ' +
+              '<a href="https://www.last.fm/settings/privacy" target="_blank">Make scrobbles public</a>, then retry.';
+          } else if (d.status === 'notfound') {
+            result.className = 'result err';
+            result.textContent = '✗ No Last.fm user with that name.';
+          } else {
+            result.className = 'result err';
+            result.textContent = 'Could not check right now — you can still continue.';
+          }
+        })
+        .catch(() => { result.className = 'result err'; result.textContent = 'Network error.'; });
+    }
+    input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(check, 500); });
+    if (input.value.trim()) check();
+  </script>
+</body>
+</html>

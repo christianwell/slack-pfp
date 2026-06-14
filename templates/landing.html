@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slack PFP · Now-playing profile photos</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
+           display: grid; place-items: center; min-height: 100vh; padding: 24px; }
+    .card { background: #1a1d27; padding: 40px; border-radius: 20px; width: min(560px, 95vw);
+            box-shadow: 0 10px 40px rgba(0,0,0,.4); text-align: center; }
+    h1 { margin: 0 0 8px; font-size: 1.6rem; }
+    p.sub { margin: 0 0 24px; color: #8b90a0; font-size: .95rem; line-height: 1.5; }
+    .sample { background: #11131a; border: 1px solid #232838; border-radius: 12px;
+              padding: 14px 16px; margin: 0 0 24px; text-align: left; font-size: .9rem; }
+    .sample .status { color: #cdd2e0; }
+    .sample .muted { color: #8b90a0; font-size: .8rem; margin-top: 6px; }
+    a.slack { display: inline-flex; align-items: center; gap: 10px; padding: 13px 22px;
+              border-radius: 12px; background: #4f7cff; color: #fff; font-weight: 600;
+              text-decoration: none; font-size: 1rem; }
+    a.slack:hover { background: #3d68ec; }
+    .privacy { margin-top: 22px; color: #8b90a0; font-size: .78rem; line-height: 1.5; }
+    .flash { background: #3a1d24; color: #ff9aa8; padding: 10px 12px; border-radius: 10px;
+             font-size: .85rem; margin-bottom: 18px; }
+    .badge { display:inline-block; margin-top:14px; font-size:.72rem; color:#7fe0a3;
+             background:#11331f; padding:4px 10px; border-radius:999px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🎵 Slack PFP</h1>
+    <p class="sub">Your Slack profile photo shows your current album art (framed),
+      and your status shows what you're listening to — automatically, from Last.fm.</p>
+
+    {% with messages = get_flashed_messages() %}
+      {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+    {% endwith %}
+
+    <div class="sample">
+      <div class="status">🎵&nbsp; 90210 (feat. Kacy Hill) - Travis Scott │ by slackpfp.christianwell.xyz</div>
+      <div class="muted">…and your photo gets a framed album-art badge.</div>
+    </div>
+
+    {% if configured %}
+      <a class="slack" href="{{ url_for('login') }}">Add to Slack</a>
+    {% else %}
+      <p class="sub">Slack sign-in isn't configured on this server yet.</p>
+    {% endif %}
+
+    <div class="badge">Hack Club workspace only</div>
+
+    <p class="privacy">We only read your <strong>public</strong> Last.fm scrobbles and set
+      <strong>your own</strong> Slack photo and status. Your Slack token is encrypted at rest.
+      You can pause or delete your data anytime.</p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,232 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slack PFP · Dashboard</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f1117; color: #e6e8ee; }
+    header { display: flex; align-items: center; justify-content: space-between;
+             padding: 16px 24px; border-bottom: 1px solid #1d2130; position: sticky; top: 0;
+             background: #0f1117; z-index: 5; }
+    header h1 { font-size: 1.1rem; margin: 0; }
+    a.logout { color: #8b90a0; font-size: .85rem; text-decoration: none; }
+    .wrap { display: grid; grid-template-columns: 320px 1fr; gap: 24px; padding: 24px;
+            max-width: 1100px; margin: 0 auto; align-items: start; }
+    @media (max-width: 780px) { .wrap { grid-template-columns: 1fr; } }
+    .card { background: #1a1d27; border-radius: 16px; padding: 20px; margin-bottom: 20px;
+            border: 1px solid #232838; }
+    .card h2 { font-size: .8rem; text-transform: uppercase; letter-spacing: .06em;
+               color: #8b90a0; margin: 0 0 16px; }
+    .preview img { width: 100%; border-radius: 14px; display: block; background: #11131a; }
+    .now { margin-top: 14px; font-size: .9rem; }
+    .now .song { font-weight: 600; }
+    .now .muted { color: #8b90a0; font-size: .82rem; }
+    label { display: block; font-size: .8rem; color: #b8bdcc; margin: 14px 0 6px; }
+    input[type=text], input[type=number], select {
+      width: 100%; padding: 9px 11px; border-radius: 9px; border: 1px solid #2b2f3d;
+      background: #11131a; color: #e6e8ee; font-size: .9rem; }
+    .row { display: flex; gap: 10px; }
+    .row > * { flex: 1; }
+    .switch { display: flex; align-items: center; gap: 10px; margin: 12px 0; font-size: .9rem; }
+    .switch input { width: 18px; height: 18px; accent-color: #4f7cff; }
+    button { padding: 10px 14px; border: none; border-radius: 9px; background: #4f7cff;
+             color: #fff; font-weight: 600; cursor: pointer; font-size: .88rem; }
+    button:hover { background: #3d68ec; }
+    button.ghost { background: #232838; color: #cdd2e0; }
+    button.ghost:hover { background: #2c3245; }
+    button.danger { background: #3a1d24; color: #ff9aa8; }
+    a.btnlink { display: inline-block; padding: 10px 14px; border-radius: 9px; background: #1b3a2a;
+                color: #7fe0a3; font-weight: 600; font-size: .88rem; text-decoration: none; }
+    a.btnlink:hover { background: #224a36; }
+    .pill { display: inline-block; padding: 3px 9px; border-radius: 999px; font-size: .72rem; }
+    .on { background: #11331f; color: #6ee7a0; }
+    .off { background: #2a2030; color: #c79ad0; }
+    .item { display: flex; align-items: center; justify-content: space-between; gap: 10px;
+            padding: 10px 0; border-bottom: 1px solid #232838; font-size: .88rem; }
+    .item:last-child { border-bottom: none; }
+    .item .meta { color: #8b90a0; font-size: .76rem; }
+    form.inline { display: inline; }
+    .flash { background: #14331f; color: #7fe0a3; padding: 10px 14px; border-radius: 10px;
+             margin: 0 24px; font-size: .85rem; }
+    .badge { font-size: 1.4rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>🎵 Slack PFP Dashboard</h1>
+    <div style="display:flex; gap:16px; align-items:center;">
+      <a class="logout" href="{{ url_for('account') }}">Account</a>
+      <a class="logout" href="{{ url_for('logout') }}">Log out</a>
+    </div>
+  </header>
+
+  {% with messages = get_flashed_messages() %}
+    {% for m in messages %}<div class="flash">{{ m }}</div>{% endfor %}
+  {% endwith %}
+
+  <div class="wrap">
+    <!-- Left: live preview -->
+    <div>
+      <div class="card preview">
+        <h2>Live preview</h2>
+        <img id="preview" src="{{ url_for('preview') }}" alt="preview">
+        <div class="now">
+          {% if state.playing %}
+            <div class="song">{{ state.song }}</div>
+            <div class="muted">{{ state.artist }}{% if state.album %} · {{ state.album }}{% endif %}</div>
+          {% else %}
+            <div class="muted">Nothing playing right now</div>
+          {% endif %}
+          {% if state.active_holidays %}
+            <div class="muted">Active: {{ state.active_holidays | join(', ') }}</div>
+          {% endif %}
+          {% if state.updated_at %}<div class="muted">Updated {{ state.updated_at }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: controls -->
+    <div>
+      <div class="card">
+        <h2>Settings</h2>
+        <form method="post" action="{{ url_for('update_settings') }}">
+          <div class="switch" style="justify-content:space-between;">
+            <span style="display:flex; align-items:center; gap:10px;">
+              <input type="checkbox" name="frame_enabled" {% if cfg.frame_enabled %}checked{% endif %}>
+              <span>Show framed album art</span>
+            </span>
+            <a class="btnlink" style="padding:5px 10px; font-size:.78rem;"
+               href="{{ url_for('editor', scene='album') }}">Edit / move</a>
+          </div>
+          <div class="switch">
+            <input type="checkbox" name="show_status" {% if cfg.show_status %}checked{% endif %}>
+            <span>Update Slack status text</span>
+          </div>
+          <label>Status format <span class="meta">— use {song}, {artist} and {album} · trimmed to 100 chars</span></label>
+          <input type="text" name="status_format" value="{{ cfg.status_format }}"
+                 placeholder="{song} - {artist} │ by slackpfp.christianwell.xyz">
+          <label>Status emoji</label>
+          <input type="text" name="status_emoji" value="{{ cfg.status_emoji }}" data-emoji>
+          <label>Default status <span class="meta">— shown when nothing is playing</span></label>
+          <input type="text" name="default_status" value="{{ cfg.default_status }}" placeholder="e.g. hack club ambassador btw">
+          <label>Default status emoji</label>
+          <input type="text" name="default_status_emoji" value="{{ cfg.default_status_emoji }}" placeholder=":wave:" data-emoji>
+          <div class="row">
+            <div><label>Poll interval (s)</label>
+              <input type="number" name="poll_interval" min="2" value="{{ cfg.poll_interval }}"></div>
+            <div><label>Restore delay (s)</label>
+              <input type="number" name="restore_delay" min="0" value="{{ cfg.restore_delay }}"></div>
+          </div>
+          <div style="margin-top:18px"><button type="submit">Save settings</button></div>
+        </form>
+        <div style="margin-top:14px; border-top:1px solid #232838; padding-top:12px; display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <span id="emoji-meta" class="meta">Loading workspace emojis…</span>
+          <form class="inline" method="post" action="{{ url_for('refresh_emojis') }}">
+            <button class="ghost" type="submit" style="padding:6px 10px; font-size:.78rem;">Refresh emojis</button>
+          </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Holidays</h2>
+        {% for h in cfg.holidays %}
+        <div class="item">
+          <div>
+            <strong>{{ h.name }}</strong>
+            <span class="pill {{ 'on' if h.enabled else 'off' }}">{{ 'on' if h.enabled else 'off' }}</span>
+            <div class="meta">{{ h.start }} → {{ h.end }} · {{ h.status_text }} · {{ h['items'] | length }} item(s)</div>
+          </div>
+          <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+            <a class="btnlink" href="{{ url_for('editor', scene=h.id) }}">Edit / move</a>
+            <form class="inline" method="post" action="{{ url_for('toggle_holiday', hid=h.id) }}">
+              <button class="ghost" type="submit">{{ 'Disable' if h.enabled else 'Enable' }}</button>
+            </form>
+            <form class="inline" method="post" action="{{ url_for('delete_holiday', hid=h.id) }}"
+                  onsubmit="return confirm('Delete holiday {{ h.name }}?');">
+              <button class="danger" type="submit">Delete</button>
+            </form>
+          </div>
+        </div>
+        {% endfor %}
+
+        <form method="post" action="{{ url_for('add_holiday') }}"
+              style="margin-top:16px; border-top:1px solid #232838; padding-top:16px;">
+          <label>New holiday name</label>
+          <input type="text" name="name" placeholder="e.g. Valentine's Day" required>
+          <div class="row">
+            <div><label>Start (MM-DD)</label><input type="text" name="start" placeholder="02-14" required></div>
+            <div><label>End (MM-DD)</label><input type="text" name="end" placeholder="02-14" required></div>
+          </div>
+          <label>Status text</label>
+          <input type="text" name="status_text" placeholder="💖 Happy Valentine's!">
+          <label>Status emoji</label>
+          <input type="text" name="status_emoji" placeholder=":heart:" data-emoji>
+          <div style="margin-top:16px"><button type="submit">Create holiday</button></div>
+        </form>
+      </div>
+
+      <div class="card">
+        <h2>Custom overlays
+          <a class="btnlink" style="float:right; padding:5px 10px; font-size:.78rem;"
+             href="{{ url_for('editor', scene='custom') }}">Move on canvas</a>
+        </h2>
+        {% for o in cfg.custom_overlays %}
+        <div class="item">
+          <div>
+            <span class="badge">{{ o.label or o.emoji or 'image' }}</span>
+            <span class="pill {{ 'on' if o.enabled else 'off' }}">{{ 'on' if o.enabled else 'off' }}</span>
+            <div class="meta">{{ o.anchor }} · scale {{ o.scale }}</div>
+          </div>
+          <div>
+            <form class="inline" method="post" action="{{ url_for('toggle_overlay', oid=o.id) }}">
+              <button class="ghost" type="submit">{{ 'Disable' if o.enabled else 'Enable' }}</button>
+            </form>
+            <form class="inline" method="post" action="{{ url_for('delete_overlay', oid=o.id) }}">
+              <button class="danger" type="submit">Delete</button>
+            </form>
+          </div>
+        </div>
+        {% else %}
+        <div class="meta" style="margin-bottom:14px">No custom overlays yet.</div>
+        {% endfor %}
+
+        <form method="post" action="{{ url_for('add_overlay') }}" enctype="multipart/form-data"
+              style="margin-top:16px; border-top:1px solid #232838; padding-top:16px;">
+          <div class="row">
+            <div><label>Emoji</label><input type="text" name="emoji" placeholder="⭐"></div>
+            <div><label>Hack Club emoji</label><input type="text" name="slack_emoji" placeholder="hackshark"></div>
+          </div>
+          <label>…or upload image</label>
+          <input type="file" name="image" accept=".png,.gif,.webp">
+          <div class="row">
+            <div><label>Position</label>
+              <select name="anchor">
+                {% for a in anchors %}<option value="{{ a }}"
+                  {% if a == 'top-right' %}selected{% endif %}>{{ a }}</option>{% endfor %}
+              </select>
+            </div>
+            <div><label>Scale</label><input type="number" name="scale" step="0.01" min="0.02" max="1" value="0.25"></div>
+          </div>
+          <div class="row">
+            <div><label>Offset X</label><input type="number" name="offset_x" step="0.01" min="0" max="1" value="0.02"></div>
+            <div><label>Offset Y</label><input type="number" name="offset_y" step="0.01" min="0" max="1" value="0.02"></div>
+          </div>
+          <div style="margin-top:16px"><button type="submit">Add overlay</button></div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Refresh the preview periodically so config changes show up.
+    setInterval(() => {
+      const img = document.getElementById('preview');
+      img.src = "{{ url_for('preview') }}?t=" + Date.now();
+    }, 8000);
+  </script>
+  <script src="{{ url_for('static', filename='emoji-picker.js') }}"></script>
+</body>
+</html>

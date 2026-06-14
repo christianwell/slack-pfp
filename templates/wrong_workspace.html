@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Slack PFP · Wrong workspace</title>
+  <style>
+    :root { color-scheme: dark; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: #0f1117; color: #e6e8ee;
+           display: grid; place-items: center; min-height: 100vh; padding: 24px; }
+    .card { background: #1a1d27; padding: 40px; border-radius: 18px; width: min(460px, 95vw);
+            text-align: center; box-shadow: 0 10px 40px rgba(0,0,0,.4); }
+    h1 { margin: 0 0 10px; font-size: 1.3rem; }
+    p { color: #8b90a0; font-size: .92rem; line-height: 1.5; }
+    a { display:inline-block; margin-top:20px; color: #8fb0ff; text-decoration: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>🔒 Hack Club only</h1>
+    <p>This service is only available to the Hack Club Slack workspace
+      (<code>{{ team }}</code>). It looks like you signed in from a different workspace,
+      so no account was created.</p>
+    <a href="{{ url_for('index') }}">← Back to start</a>
+  </div>
+</body>
+</html>
