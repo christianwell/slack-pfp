@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Guidance for working on **Slack PFP** and deploying it to the production host.
+Guidance for working on **Slack PFP** 
 
 ## Project layout
 
