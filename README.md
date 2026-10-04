@@ -15,6 +15,11 @@ positioned per-user with a drag-and-drop canvas editor.
 - **`app.py`** — Flask web app: Slack OAuth login, per-user dashboard, onboarding,
   account management, overlay editor, school-mode OOO settings, live preview, `/healthz`.
 
+Hidden songs (dashboard → "Hidden songs") let you list tracks you never want shown
+on Slack. Each entry hides either everything (profile photo + status) or just the
+profile photo, keeping the track in your Slack status. Add one by typing a title
+(artist optional) or by picking from your recently played tracks.
+
 School mode (dashboard → "School mode") switches your Slack status to an OOO
 message on your school days during your school hours. Pick the days + time
 window, the status message/emoji (with an optional fallback message), and
@@ -22,7 +27,8 @@ how a playing track mixes in. School holidays (date ranges) skip school mode
 entirely and restore your normal status.
 - **`main.py`** — shared worker loop: iterates active users, throttled to stay
   under Last.fm's rate limit, updating each user's Slack photo + status via their
-  own token. Disables users whose tokens are revoked.
+  own token. Hidden songs are suppressed per their mode (photo and/or status).
+  Disables users whose tokens are revoked.
 - **`core.py`** — rendering pipeline (overlays, framing, Last.fm, Slack helpers).
 - **`db.py`** — per-user SQLite store (`users.db`); Slack tokens encrypted at rest
   with Fernet.

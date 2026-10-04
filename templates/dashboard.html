@@ -77,6 +77,9 @@
           {% if state.playing %}
             <div class="song">{{ state.song }}</div>
             <div class="muted">{{ state.artist }}{% if state.album %} · {{ state.album }}{% endif %}</div>
+            {% if state.photo_hidden %}<div class="muted">🙈 Profile photo hidden</div>{% endif %}
+          {% elif state.hidden %}
+            <div class="muted">🙈 Hidden: {{ state.song }}{% if state.artist %} — {{ state.artist }}{% endif %}</div>
           {% else %}
             <div class="muted">Nothing playing right now</div>
           {% endif %}
@@ -143,6 +146,47 @@
           <form class="inline" method="post" action="{{ url_for('refresh_emojis') }}">
             <button class="ghost" type="submit" style="padding:6px 10px; font-size:.78rem;">Refresh emojis</button>
           </form>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>Hidden songs</h2>
+        <div class="meta" style="margin:-8px 0 8px;">Songs listed here are never shown on Slack. Hide a song everywhere (photo + status), or keep it in your status while hiding the album art from your profile photo.</div>
+        {% for h in cfg.hidden_songs %}
+        <div class="item">
+          <div>
+            <strong>{{ h.song }}</strong>
+            {% if h.artist %}<span class="meta">— {{ h.artist }}</span>{% endif %}
+            <div class="meta">{{ 'Hidden everywhere' if (h.mode or 'all') == 'all' else 'Photo hidden, status kept' }}</div>
+          </div>
+          <form class="inline" method="post" action="{{ url_for('delete_hidden_song', sid=h.id) }}">
+            <button class="danger" type="submit">Remove</button>
+          </form>
+        </div>
+        {% else %}
+        <div class="meta" style="margin-bottom:14px">No hidden songs yet.</div>
+        {% endfor %}
+
+        <form method="post" action="{{ url_for('add_hidden_song') }}" id="hidden-song-form"
+              style="margin-top:16px; border-top:1px solid #232838; padding-top:16px;">
+          <div class="row">
+            <div><label>Song title</label><input type="text" name="song" id="hidden-song" placeholder="e.g. Never Gonna Give You Up" required></div>
+            <div><label>Artist <span class="meta">— optional</span></label><input type="text" name="artist" id="hidden-artist" placeholder="e.g. Rick Astley"></div>
+          </div>
+          <label>Hide from</label>
+          <select name="mode">
+            <option value="all">Everything (profile photo + status)</option>
+            <option value="photo">Profile photo only (keep status)</option>
+          </select>
+          <div style="margin-top:14px"><button type="submit">Hide song</button></div>
+        </form>
+
+        <div style="margin-top:14px; border-top:1px solid #232838; padding-top:12px;">
+          <div style="display:flex; gap:8px; align-items:center; justify-content:space-between;">
+            <span style="font-size:.82rem;">Pick from recently played</span>
+            <button class="ghost" type="button" id="recent-load" style="padding:6px 10px; font-size:.78rem;">Load</button>
+          </div>
+          <div id="recent-songs" class="meta" style="margin-top:8px;">Load your recent tracks to hide one with a click.</div>
         </div>
       </div>
 
@@ -312,6 +356,37 @@
       const img = document.getElementById('preview');
       img.src = "{{ url_for('preview') }}?t=" + Date.now();
     }, 8000);
+
+    // Hidden songs: load recently played tracks and let the user pick one.
+    const recentBtn = document.getElementById('recent-load');
+    if (recentBtn) {
+      recentBtn.addEventListener('click', async () => {
+        const box = document.getElementById('recent-songs');
+        box.textContent = 'Loading…';
+        try {
+          const res = await fetch("{{ url_for('recent_songs') }}");
+          const tracks = (await res.json()).tracks || [];
+          if (!tracks.length) { box.textContent = 'No recent tracks found.'; return; }
+          box.innerHTML = '';
+          tracks.forEach(t => {
+            const chip = document.createElement('button');
+            chip.type = 'button';
+            chip.className = 'btnlink';
+            chip.style.cssText = 'margin:0 6px 6px 0; padding:5px 10px; font-size:.78rem;';
+            chip.textContent = t.artist ? `${t.song} — ${t.artist}` : t.song;
+            chip.addEventListener('click', () => {
+              document.getElementById('hidden-song').value = t.song;
+              document.getElementById('hidden-artist').value = t.artist || '';
+              document.getElementById('hidden-song-form')
+                .scrollIntoView({ behavior: 'smooth', block: 'center' });
+            });
+            box.appendChild(chip);
+          });
+        } catch (e) {
+          box.textContent = 'Could not load recent tracks.';
+        }
+      });
+    }
   </script>
   <script src="{{ url_for('static', filename='emoji-picker.js') }}"></script>
 </body>

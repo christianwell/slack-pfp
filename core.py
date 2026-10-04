@@ -112,6 +112,12 @@ DEFAULT_CONFIG = {
         },
     ],
     "custom_overlays": [],
+    # Songs the user never wants shown on Slack. Each entry is
+    # {"id", "song", "artist", "mode"}; ``artist`` is optional and, when blank,
+    # hides the song by any artist. ``mode`` is "all" (hide photo + status) or
+    # "photo" (hide only the profile photo, keep the status). Matching is
+    # case-insensitive (see hidden_song_mode).
+    "hidden_songs": [],
     "school": {
         "enabled": False,
         "days": [0, 1, 2, 3, 4],  # 0=Mon … 6=Sun
@@ -166,6 +172,54 @@ def save_config(cfg: dict):
 
 
 STATUS_MAX = 100  # Slack profile status_text hard limit
+
+
+def _norm(value) -> str:
+    """Normalize a song/artist string for case- and whitespace-insensitive matching."""
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def song_key(song: str, artist: str = "") -> tuple[str, str]:
+    """Normalized (song, artist) key used to compare tracks and hidden entries."""
+    return _norm(song), _norm(artist)
+
+
+def is_song_hidden(cfg: dict, song: str, artist: str = "") -> bool:
+    """True if the track is hidden in any way (photo and/or status)."""
+    return hidden_song_mode(cfg, song, artist) is not None
+
+
+HIDDEN_MODES = ("all", "photo")
+
+
+def hidden_song_mode(cfg: dict, song: str, artist: str = "") -> str | None:
+    """Return the hide mode for a playing track, or None if it isn't hidden.
+
+    Entries live in ``cfg["hidden_songs"]`` as ``{"song", "artist", "mode"}``
+    dicts (legacy bare strings are also accepted). ``artist`` is optional: a
+    blank artist hides the song by any artist. Matching ignores case and extra
+    whitespace. Modes:
+
+      - ``"all"``   hide both the profile photo and the Slack status text
+      - ``"photo"`` hide only the profile photo; the status still shows the track
+    """
+    song_n = _norm(song)
+    if not song_n:
+        return None
+    artist_n = _norm(artist)
+    for entry in cfg.get("hidden_songs") or []:
+        if isinstance(entry, str):
+            entry = {"song": entry, "artist": ""}
+        if not isinstance(entry, dict):
+            continue
+        if _norm(entry.get("song")) != song_n:
+            continue
+        entry_artist = _norm(entry.get("artist"))
+        if entry_artist and entry_artist != artist_n:
+            continue
+        mode = entry.get("mode") or "all"
+        return mode if mode in HIDDEN_MODES else "all"
+    return None
 
 
 def format_status(fmt: str, song: str, artist: str, album: str = "") -> str:
@@ -807,6 +861,44 @@ def validate_lastfm_user(api_key: str, username: str) -> dict:
     except Exception as e:
         print(f"Last.fm validate error: {e}")
         return {"status": "error", "track": ""}
+
+
+def get_recent_tracks(api_key: str, username: str, limit: int = 10) -> list:
+    """Return recent tracks as ``[{"song", "artist", "album", "nowplaying"}]``.
+
+    Used by the dashboard's "pick from recently played" hidden-song picker.
+    Returns an empty list on any API/network failure.
+    """
+    try:
+        resp = requests.get(
+            LASTFM_API_URL,
+            params={
+                "method": "user.getrecenttracks",
+                "user": username,
+                "api_key": api_key,
+                "format": "json",
+                "limit": limit,
+            },
+            timeout=10,
+        )
+        resp.raise_for_status()
+        tracks = resp.json().get("recenttracks", {}).get("track", [])
+    except Exception as e:
+        print(f"Last.fm recent tracks error: {e}")
+        return []
+    out = []
+    for t in tracks:
+        song = t.get("name") or ""
+        artist = t.get("artist", {}).get("#text", "")
+        if not song or not artist:
+            continue
+        out.append({
+            "song": song,
+            "artist": artist,
+            "album": t.get("album", {}).get("#text", ""),
+            "nowplaying": t.get("@attr", {}).get("nowplaying") == "true",
+        })
+    return out
 
 
 def get_current_track(api_key: str, username: str) -> tuple:
