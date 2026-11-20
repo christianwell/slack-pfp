@@ -62,6 +62,16 @@ For deploying changes to the production host, see [`AGENTS.md`](AGENTS.md).
 
 ## Operations
 
+- **Hosting:** production runs only on `rpi5`, with one `python main.py` worker
+  and one Waitress web service on port 8091. Cloudflare Tunnel forwards the
+  public hostname to Traefik on port 8081, which routes to the web service.
+  There is no automatic failover, DNS promotion, or standby snapshot replication.
+  If the Pi or its proxy is down, restore that host rather than promoting Nest.
+- **Retired Nest deployment:** the old `slack-pfp-failover-svilat` controller and
+  snapshot receiver are stopped, with restart disabled. Both services are behind
+  the `retired-failover` Compose profile in the saved deployment configuration so
+  an ordinary Compose start does not reactivate them. Their saved data is retained
+  for recovery only; do not start a second worker or use it as a current backup.
 - **Health:** `GET /healthz` → user counts + OAuth-configured flag.
 - **Backups:** back up `users.db` (and `.env` for the keys) regularly.
 - **Key rotation:** to rotate `FERNET_KEY`, decrypt-and-re-encrypt tokens with
