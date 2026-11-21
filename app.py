@@ -349,6 +349,74 @@ def update_settings():
 
 
 # --------------------------------------------------------------------------- #
+# Hidden songs (never show these on Slack)
+# --------------------------------------------------------------------------- #
+
+def _hidden_songs(user: db.User) -> list:
+    """The user's hidden-song entries, normalizing legacy bare strings to dicts."""
+    raw = user.config.setdefault("hidden_songs", [])
+    norm = []
+    for e in raw:
+        if isinstance(e, str):
+            e = {"id": uuid.uuid4().hex[:8], "song": e, "artist": "", "mode": "all"}
+        if isinstance(e, dict):
+            e.setdefault("mode", "all")
+            norm.append(e)
+    if norm != raw:
+        user.config["hidden_songs"] = norm
+    return norm
+
+
+@app.route("/api/hidden-songs/add", methods=["POST"])
+@login_required
+def add_hidden_song():
+    user = current_user()
+    song = request.form.get("song", "").strip()
+    artist = request.form.get("artist", "").strip()
+    mode = request.form.get("mode", "all").strip()
+    if mode not in core.HIDDEN_MODES:
+        mode = "all"
+    if not song:
+        flash("Enter a song title to hide.")
+        return redirect(url_for("dashboard"))
+    hidden = _hidden_songs(user)
+    key = core.song_key(song, artist)
+    for e in hidden:
+        if core.song_key(e.get("song"), e.get("artist")) == key:
+            e["mode"] = mode
+            save(user)
+            flash(f"Updated '{song}'")
+            return redirect(url_for("dashboard"))
+    hidden.append({"id": uuid.uuid4().hex[:8], "song": song, "artist": artist,
+                   "mode": mode})
+    save(user)
+    flash(f"Hidden '{song}'" + (f" by {artist}" if artist else ""))
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/api/hidden-songs/<sid>/delete", methods=["POST"])
+@login_required
+def delete_hidden_song(sid):
+    user = current_user()
+    user.config["hidden_songs"] = [
+        e for e in _hidden_songs(user) if e.get("id") != sid
+    ]
+    save(user)
+    flash("Hidden song removed")
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/api/hidden-songs/recent")
+@login_required
+def recent_songs():
+    """Recently played tracks, for the dashboard's hidden-song picker."""
+    user = current_user()
+    if not (LASTFM_API_KEY and user.lastfm_username):
+        return jsonify({"tracks": []})
+    return jsonify({"tracks": core.get_recent_tracks(LASTFM_API_KEY, user.lastfm_username)})
+
+
+# --------------------------------------------------------------------------- #
 # School mode (OOO while in class)
 # --------------------------------------------------------------------------- #
 

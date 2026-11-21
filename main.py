@@ -41,7 +41,8 @@ _runtime: dict[str, dict] = {}
 def _rt(uid: str) -> dict:
     return _runtime.setdefault(uid, {
         "last_status": None, "last_photo_key": None,
-        "last_config_sig": None, "not_playing_since": None, "auth_fails": 0,
+        "last_config_sig": None, "not_playing_since": None,
+        "photo_default_since": None, "auth_fails": 0,
     })
 
 
@@ -99,9 +100,12 @@ def set_photo(client, user, album_url):
         image=core.prepare_image_for_slack(final_img)))
 
 
-def write_state(user, playing, song, artist, album, album_art, lastfm_status=""):
+def write_state(user, playing, song, artist, album, album_art, lastfm_status="",
+                hidden=None, photo_hidden=False):
     user.state.update({
         "playing": playing,
+        "hidden": hidden,
+        "photo_hidden": photo_hidden,
         "song": song,
         "artist": artist,
         "album": album,
@@ -131,27 +135,52 @@ def process_user(user: db.User, api_key: str):
     track_id, song, artist, album, album_art = core.get_current_track(
         api_key, user.lastfm_username)
     playing = bool(track_id and song and artist)
+    # Hidden songs can suppress the status, the photo, or both. "all" behaves
+    # exactly like "nothing playing"; "photo" keeps the status but drops the
+    # album art from the profile photo.
+    hide_mode = core.hidden_song_mode(cfg, song, artist) if playing else None
+    status_playing = playing and hide_mode != "all"
+    photo_playing = playing and hide_mode is None
 
     try:
-        if playing:
+        write_state(user, status_playing,
+                    song if playing else None,
+                    artist if playing else None,
+                    album if playing else None,
+                    album_art if photo_playing else None,
+                    "ok", hidden=hide_mode,
+                    photo_hidden=bool(playing and not photo_playing))
+
+        # Status text: music while status_playing, otherwise the default status.
+        if status_playing:
             rt["not_playing_since"] = None
-            write_state(user, True, song, artist, album, album_art, "ok")
             text, emoji = status_for(cfg, True, song, artist, album, "")
             if (text, emoji) != rt["last_status"] and set_status(client, text, emoji):
                 rt["last_status"] = (text, emoji)
-            photo_key = ("track", track_id)
-            if photo_key != rt["last_photo_key"]:
-                print(f"[{user.slack_user_id}] Now playing: {song} by {artist}")
-                if set_photo(client, user, album_art):
-                    rt["last_photo_key"] = photo_key
         else:
-            write_state(user, False, None, None, None, None, "ok")
+            if hide_mode == "all":
+                print(f"[{user.slack_user_id}] Hidden song, skipping: {song} by {artist}")
             if rt["not_playing_since"] is None:
                 rt["not_playing_since"] = time.time()
             elif time.time() - rt["not_playing_since"] >= cfg.get("restore_delay", 30):
                 text, emoji = status_for(cfg, False, None, None, None, "")
                 if (text, emoji) != rt["last_status"] and set_status(client, text, emoji):
                     rt["last_status"] = (text, emoji)
+
+        # Profile photo: album art while photo_playing, otherwise the default.
+        if photo_playing:
+            rt["photo_default_since"] = None
+            photo_key = ("track", track_id)
+            if photo_key != rt["last_photo_key"]:
+                print(f"[{user.slack_user_id}] Now playing: {song} by {artist}")
+                if set_photo(client, user, album_art):
+                    rt["last_photo_key"] = photo_key
+        else:
+            if hide_mode == "photo":
+                print(f"[{user.slack_user_id}] Photo hidden, status only: {song} by {artist}")
+            if rt["photo_default_since"] is None:
+                rt["photo_default_since"] = time.time()
+            elif time.time() - rt["photo_default_since"] >= cfg.get("restore_delay", 30):
                 if rt["last_photo_key"] != ("default",):
                     if set_photo(client, user, None):
                         rt["last_photo_key"] = ("default",)
